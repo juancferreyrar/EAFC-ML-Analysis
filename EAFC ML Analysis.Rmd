@@ -1,0 +1,724 @@
+---
+title: "Fifa ML Analysis "
+author: "Juan Carlos Ferreyra"
+output: pdf_document
+---
+
+```{r setup1, include=FALSE}
+knitr::opts_chunk$set(
+	echo = FALSE,
+	message = FALSE,
+	warning = FALSE
+)
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+library(tidyverse)
+theme_set(theme_minimal())
+```
+
+```{r setup2}
+set.seed(42244)
+```
+
+# Simulation exercise
+
+# Data generation
+
+Data Source: https://www.kaggle.com/datasets/nyagami/ea-sports-fc-25-database-ratings-and-stats/data
+
+EA FC is the largest football game available on the market today. With data of over 16,000 players, this data can serve several purposes for models. In this case, creating a classification model for the players will be the goal. To define some terminology that will be used, the following abbreviations are explained: Position(The position on the field of a football player), CM (central-midfielder, a position known as the "jack of all trades"), CAM (Central-Attacking-Midfielder, a position focused on pushing up the field, attempting long balls and long shots, and dominating in the attack), OM (Out-Midfielder, position that is originally labeled as LM or RM (Left or Right Middle), but for the purpose of the project is aggregated into one position), and CDM (Central-Defensive-Midfielder, focused on not going past the midfield line and on recovering possession.) A player has dozens of statistics, but the main ones are the following: PAC (Pace, or how fast a player is on the pitch), DRI (Dribbling, or how well a player controls the ball), PAS (Passing, the players ability to pass the ball), PHY (Physical, how strong a player is and how much resistance they have on field), DEF (Defending, how well a player is defensively) and SHO (Shooting, or how well a player can throw precise and strong shots).To focus on a more accurate CEF model, we will only take these positions and statistics into consideration, where the goal is to classify a player's position based on these statistics. The amount of midfielders in EA FC is around 6,000 players.
+
+# Data Cleansing:
+
+Not every metric is required, and to safe computational power and ensure more precise results, we will only keep the aforementioned columns.Data integrity has been verified through Kaggle.
+
+
+```{r}
+library(readxl)
+
+male_players <- read_excel("C:/Users/jcfer/OneDrive/Documents/male_players.xlsx")
+
+columns_to_keep <- c("Name","PAC","SHO","PAS","DRI","DEF","PHY","Position")
+midfield_positions <- c("LM", "RM", "CAM", "CM", "CDM")
+male_players <- male_players %>%
+  select(all_of(columns_to_keep)) %>%
+  filter(Position %in% midfield_positions)
+male_players <- male_players %>%
+  mutate(Position = if_else(Position %in% c("LM", "RM"), "OM", Position))
+
+#We verify that the mutation worked properly and the 4 positions are created.
+head(male_players)
+subset(male_players, Position == "OM")
+```
+
+# CEF
+
+A player's stats in EA FC are not only calculated by ability, but also by international recognition (as a player on a lower and less competitive division may have amazing stats, but the lack of competitiveness makes it so that the stats are relative to the level of the league). This CEF puts weights on different positions based on the importance of the statistic on the mentioned positions. For example, for CAM, passing, shooting, and dribbling, are the most important metrics to consider, while for other positions like CM, a "jack of all trades" approach is taken as it is more balanced. This overall simulates the functional relationship between a player's metrics (predictors) and their position (outcome). The outcome varibale (y) needs to be consistent with real-world domain knowledge.Again, the weights of each metric is based on football knowledge on what managers prioritize for each position. The weighted contributions are used to avoid a single metric dominating others unless it is intentional.
+
+```{r}
+CEF <- function(PAC, SHO, PAS, DRI, DEF, PHY, Position) {
+  if_else(
+    Position == "CAM",
+    1/2 + PAS^2 + 1/4 * SHO^2 + DRI^2,
+    if_else(
+      Position == "CDM",
+      1/3 * DEF^2 + PHY^2 + 1/5,
+      if_else(
+        Position == "CM",
+        1/5 * PAC^2 + 1/5 * PAS^2 + 1/5 * SHO^2 + 1/5 * DRI^2 + 1/5 * DEF^2 + 1/5 * PHY^2,
+        if_else(
+          Position == "OM",
+          1/2 + PAC^2 + 1/3 * PAS^2 + 1/3 * DRI^2,
+          NA_real_
+        )
+      )
+    )
+  )
+}
+  
+```
+
+Because of the large variability in a player performance, we add noise, with chosing a standard deviation of 2 to keep outputs stable. We scale the y to a range of 1 to 4 to have comparability in the visualization.
+
+We split the data into training and test data, to later test different models for accuracy, we do a 80/20 split. We also remove the position column for the test data as this will be the outcome variable.
+
+We visualize the outcome variable against each numeric predictor, each position is assigned a different color in order to have a contrast in the visualization.
+
+```{r}
+male_players <- male_players %>%
+  mutate(
+    y = CEF(PAC, SHO, PAS, DRI, DEF, PHY, Position) + rnorm(n(), mean = 0, sd = 2)  
+  )
+male_players <- male_players %>%
+  group_by(Position) %>%
+  mutate(
+    y_normalized = (y - min(y)) / (max(y) - min(y)) * (4-1) 
+  ) %>%
+  ungroup()
+
+
+n <- nrow(male_players)
+index <- sample(1:n, size = floor(0.8 * n))
+
+male_players_training_set <- male_players[index, ]
+male_players_test_set <- male_players[-index, ]
+test_labels <- male_players_test_set$Position
+male_players_test_data <- male_players_test_set %>% select(-Position)
+
+
+suppressPackageStartupMessages({
+  library(ggplot2)
+  library(rlang)
+})
+
+plot_feature <- function(data, feature) {
+  ggplot(data, aes(x = .data[[feature]], y = y_normalized, color = Position)) +
+    geom_point(alpha = 0.7) +
+    geom_smooth(method = "loess", se = FALSE, linewidth = 1, color = "black") +
+    labs(
+      title = paste("Normalized Outcome Variable (y) vs", feature),
+      x = feature,
+      y = "Normalized Outcome Variable (y)"
+    ) +
+    theme_minimal() +
+    scale_color_manual(
+      values = c("CM" = "pink", "CAM" = "orange", "CDM" = "black", "OM" = "purple")
+    )
+}
+
+features <- c("PAC", "SHO", "PAS", "DRI", "DEF","PHY")
+plots <- lapply(features, function(feature) plot_feature(male_players, feature))
+
+for (feature in features) {
+  print(plot_feature(male_players, feature))
+}
+
+```
+
+
+The following plots are representing the normalized outcome variable vs a certain feature (each plot represents a different feature on the x-axis). Each dot would be a player, and the color would represent the position of said player. This allows us to visualize the importance of each feature for each position.One clear example is in the PAC (Pace) graphic, were we can see how OM cluster towards the right, because of the importance of an outfield midfielder to be faster. This trend is followed in the dribbling graphic, as this is another important metric for outfield midfielders. The height of each point is how important the weight is relative to the players position. 
+
+
+```{r}
+plot_density <- function(data, feature) {
+  ggplot(data, aes(x = .data[[feature]], fill = Position)) +
+    geom_density(alpha = 0.6) +
+    labs(
+      title = paste("Density Plot of", feature, "by Position"),
+      x = feature,
+      y = "Density"
+    ) +
+    theme_minimal() +
+    scale_fill_manual(
+      values = c("CM" = "pink", "CAM" = "orange", "CDM" = "black", "OM" = "purple")
+    )
+}
+
+for (feature in features) {
+  print(plot_density(male_players, feature))
+}
+
+```
+
+
+With the following density plots, we can see the range of where players are falling on in regards to the specific predictor variable.The values are most concentrated at a different rate depending on the feature. For example, for the defense feature graph, we see how CDM has a high density, because of the high importance that the defense metric has on the position.
+
+# Additive models
+
+GAM Oracle considers interaction terms like the interaction between pace and passing, and the interaction between shooting and dribbling. This is because the interaction between these terms can be different for an OM than for a CAM.
+
+
+GAM Simple considers individual terms, using the smooth function on each term without considering the potential interaction between them. As we are dealing with potential non linear data, we smooth out each individual term.
+
+We then predict with the GAM Oracle and GAM Simple models approaches, visually comparing them to further understand their effectiveness in the context of EA FC. With a smaller residual, we can infer a better prediction, as it would consider the distance between the actual value and the predicted value.
+
+```{r}
+suppressPackageStartupMessages({
+  library(mgcv)
+  library(patchwork)
+})
+
+gam_oracle <- gam(y ~ s(PAC, PAS) + s(SHO, DRI) + s(DEF) + s(PHY),
+                  data = male_players_training_set)
+
+gam_simple <- gam(y ~ s(PAC) + s(SHO) + s(PAS) + s(DRI) + s(DEF) + s(PHY),
+                  data = male_players_training_set)
+
+
+male_players_training_set <- male_players_training_set %>%
+  mutate(
+    pred_oracle = predict(gam_oracle),
+    pred_simple = predict(gam_simple),
+    residual_oracle = y - pred_oracle,
+    residual_simple = y - pred_simple
+  )
+
+plot_oracle <- ggplot(male_players_training_set, aes(x = y, y = pred_oracle, color = Position)) +
+  geom_point(alpha = 0.6) +
+  labs(
+    title = "Observed vs Predicted (gam_oracle)",
+    x = "Observed Outcome (y)",
+    y = "Predicted Outcome"
+  ) +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set2")
+
+# Observed vs Predicted (gam_simple)
+plot_simple <- ggplot(male_players_training_set, aes(x = y, y = pred_simple, color = Position)) +
+  geom_point(alpha = 0.6) +
+  labs(
+    title = "Observed vs Predicted (gam_simple)",
+    x = "Observed Outcome (y)",
+    y = "Predicted Outcome"
+  ) +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set2")
+plot_oracle
+plot_simple
+
+```
+
+While observing a clear separation between clusters, this graphic is not sufficient to evaluate which model might be more effective. There is a strong positive correlation between observed outcomes and predicted outcomes, indicating that the model captured the trend well. We can also see how OM has a higher variability than other positions, which makes sense in the context of real-word OM being extremely versatile in their position. Because of the way the CEF assigns the weights, the clusters get spread out throughout the graph. As the CEF utilizes squared terms, the values that are higher get significantly amplified because of the non-linear relationship.
+
+
+```{r}
+residual_oracle <- ggplot(male_players_training_set, aes(x = y, y = residual_oracle, color = Position)) +
+  geom_point(alpha = 0.6) +
+  labs(
+    title = "Residuals vs Observed (gam_oracle)",
+    x = "Observed Outcome (y)",
+    y = "Residuals"
+  ) +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set2")
+
+residual_simple <- ggplot(male_players_training_set, aes(x = y, y = residual_simple, color = Position)) +
+  geom_point(alpha = 0.6) +
+  labs(
+    title = "Residuals vs Observed (gam_simple)",
+    x = "Observed Outcome (y)",
+    y = "Residuals"
+  ) +
+  theme_minimal() +
+  scale_color_brewer(palette = "Set2")
+
+
+residual_oracle
+residual_simple
+
+```
+
+In both plots, residuals are distributed accross an observed outcome range, however, the spread of the residuals in the GAM oracle model appears to be slightly more concentrated than the GAM simple.The residuals show hetoskedasticity, which was predictable because of the non-linear relationship in the data, where the GAM oracle is able to approach better through the interaction terms being considered. The GAM Oracle slightly captures the relationship better, however, another visual would be ideal to further explore this evaluation.
+
+
+```{r}
+residual_data <- male_players_training_set %>%
+  select(Position, residual_oracle, residual_simple) %>%
+  pivot_longer(cols = c(residual_oracle, residual_simple),
+               names_to = "Model",
+               values_to = "Residuals") %>%
+  mutate(Model = if_else(Model == "residual_oracle", "GAM Oracle", "GAM Simple"))
+
+ggplot(residual_data, aes(x = Position, y = Residuals, fill = Model)) +
+  geom_boxplot(position = position_dodge(width = 0.7), outlier.shape = NA) +  
+  labs(
+    title = "GAM Oracle vs GAM Simple",
+    x = "Position",
+    y = "Residuals",
+    fill = "Model"
+  ) +
+  theme_minimal() +
+  scale_fill_manual(values = c("GAM Oracle" = "orange", "GAM Simple" = "purple")) +
+  theme(
+    legend.position = "right",
+    text = element_text(size = 11) 
+  )
+
+```
+
+With presenting the residuals in boxplots, we are able to better see the difference in residuals. Accross the fours positions, we can see that the spread of residuals for CAM is larger, which can help determine decisions later on. For both CM and OM, we can see how GAM Oracle has slightly better performance, as they are closer to 0 when compared to a GAM Simple.
+
+
+```{r}
+library(Metrics)
+
+mae_oracle <- mae(male_players_training_set$y, male_players_training_set$pred_oracle)
+rmse_oracle <- rmse(male_players_training_set$y, male_players_training_set$pred_oracle)
+
+mae_simple <- mae(male_players_training_set$y, male_players_training_set$pred_simple)
+rmse_simple <- rmse(male_players_training_set$y, male_players_training_set$pred_simple)
+
+print(sprintf("GAM Oracle: MAE = %.2f, RMSE = %.2f", mae_oracle, rmse_oracle))
+print(sprintf("GAM Simple: MAE = %.2f, RMSE = %.2f", mae_simple, rmse_simple))
+
+
+```
+
+By utilizing metrics, we can more precisly determine not only which model is most effective, but also by how much. As evidenced in the lower Mean Absolute Error, and the lower Root Mean Squared Error, we can see how GAM Oracle ultimately performs better in both categories that can summarize the model performance numerically. This can conclude that while the GAM Oracle is better, the slight difference may indicate that the simple additive terms in GAM Simple are sufficient for most variance in the data. 
+
+
+# Tree based models
+
+For the decision tree, we decide to use a 10-fold for cross-validation, as the data set is relatively small, and so computational power will not be the biggest concern.
+
+We calculate RMSE and MAE to ensure that while the complexity parameter may be reasonable, that the improvements on RMSE and MAE are worth the potential risk of over fitting.
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(rpart)          
+  library(rpart.plot)      
+  library(randomForest)    
+  library(xgboost)         
+  library(caret)           
+  library(vip)             
+  library(pdp)             
+})
+
+
+train_control <- trainControl(method = "cv", number = 10)
+tree_model <- train(
+  Position ~ PAC + SHO + PAS + DRI + DEF + PHY,
+  data = male_players_training_set,
+  method = "rpart",
+  trControl = train_control,
+  tuneLength = 7
+)
+
+print(tree_model$bestTune)
+rpart.plot(tree_model$finalModel, main = "Decision Tree for Position Classification")
+
+
+tree_predictions <- predict(tree_model, male_players_test_set)
+test_labels_numeric <- as.numeric(factor(male_players_test_set$Position)) - 1
+tree_predictions_numeric <- as.numeric(factor(tree_predictions)) - 1
+rmse_tree <- sqrt(mean((tree_predictions_numeric - test_labels_numeric)^2))
+mae_tree <- mean(abs(tree_predictions_numeric - test_labels_numeric))
+
+print(sprintf("Decision Tree RMSE: %.2f", rmse_tree))
+print(sprintf("Decision Tree MAE: %.2f", mae_tree))
+
+```
+
+When experimenting with different tuneLenght, we can evaluate that 7 provides a sufficiently low complexity parameter that aligns with the size of our data set. Additionally, the risk of over fitting is reduced because of the mentioned size. As the test RMSE and MAE slightly reduce, we can confidently conclude that a tuneLenght of 7 sets a balance on model complexity and performance. Evaluating it further, it is a suitable choice for our dataset considering it can minimize errors while avoiding over fitting.
+
+```{r}
+reference_labels <- factor(male_players_test_set$Position)
+tree_predictions <- predict(tree_model, male_players_test_set)
+tree_predictions <- factor(tree_predictions, levels = levels(reference_labels))
+
+conf_matrix <- confusionMatrix(tree_predictions, reference_labels)
+
+confusion_data <- as.data.frame(conf_matrix$table)
+ggplot(confusion_data, aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 4) +
+  scale_fill_gradient(low = "lightblue", high = "purple") +
+  labs(
+    title = "Confusion Matrix Heatmap",
+    x = "Predicted Position",
+    y = "Actual Position",
+    fill = "Frequency"
+  ) +
+  theme_minimal()
+
+```
+
+A confusion matrix allows us to have a different perspective on the results of the single tree. Firstly, as mentioned, we aggregated Left midfielder with Right midfielder, as OM, leading to OM having the higher frequency. Additionally, this highlights classifications across all points, with this also leading to OM having the highest misclassification rate. The next most confused class is the central midfielder, which is also logical as their rounded skillset makes it harder to predict as their feautres may overlap with CAM or CDM. The logical relationship between the midfield positions is reflected with the misclassifications, as features often overlapp between the positions.
+
+```{r}
+suppressPackageStartupMessages({
+  library(randomForest)   
+  library(caret)           
+  library(ggplot2)         
+  library(vip)             
+  library(pdp)             
+  library(dplyr)          
+})
+
+#The decision for a 10-fold Cross-Validation is to ensure a good balance between low variance and low bias, as the small database allows the model to properly learn effectively. While increasing the folds may increase computational time, it is not a main concern, additionally, increasing the folds to a greater extent would not cause an improvement.
+
+train_control <- trainControl(method = "cv", number = 10)
+
+#Again, with a smaller dataset, it is wise to use a tuneLength of 12 as the computational power is not going to be a main impediment. Having 6 features, the optimal tuneLength would be of 12, to ensure that the classification tests a wider range off values.Additionally, by having a higher tuneLenght, we can reduce the risk of skipping over optimal values, allowing for a proper fine-tune for the Random Forest.
+
+rf_model <- train(
+  Position ~ PAC + SHO + PAS + DRI + DEF + PHY,
+  data = male_players_training_set,
+  method = "rf",
+  trControl = train_control,
+  tuneLength = 12
+)
+
+```
+
+The VIP plot ranks the features based on the importance that they have in splitting the data. While affected by the CEF, this allows us to see the impact that each feature has, and most importantly their contribution towards a more accurate classification. This information will also help us understand the process for OOD later in the project. In this case, we see the impact that defense has, and I am assuming that this is mainly in the positions of CDM or OM, where in one a high defense indicates a higher probability of being classified as a CDM, with the opposite being true for OM (lower defense increasing chances of being classified as an OM).
+
+```{r}
+vip_plot <- vip(
+  rf_model$finalModel, 
+  aesthetics = list(fill = "purple")
+) +
+  labs(
+    title = "Variable Importance - Random Forest",
+    x = "Features",
+    y = "Importance"
+  ) +
+  theme_minimal()
+print(vip_plot)
+
+```
+
+For the confusion matrix heat map, we can see the comparison of the predictions compared to the actual labels. We see a similar pattern that we saw in the simple tree, where OM was the most commonly miss classified. One potential limitation that we see again is the rate at which OM are being miss classified, which raises the question of whether the increased sample should be further tuned (in other words, if aggregating LM/RM into a OM position was the appropriate choice). In my opinion, it was an appropiate choice considering the size of the data set, but would have to consider doing a project with a larger data set to evaluate if there are differences amongst right and left footed outer midfielders.
+
+```{r}
+rf_predictions <- predict(rf_model, male_players_test_set)
+reference_labels <- factor(male_players_test_set$Position)
+conf_matrix <- confusionMatrix(rf_predictions, reference_labels)
+confusion_data <- as.data.frame(conf_matrix$table)
+confusion_heatmap <- ggplot(confusion_data, aes(x = Prediction, y = Reference, fill = Freq)) +
+  geom_tile(color = "white") +
+  geom_text(aes(label = Freq), color = "black", size = 4) +
+  scale_fill_gradient(low = "lightblue", high = "purple") +
+  labs(
+    title = "Confusion Matrix-Random Forest",
+    x = "Predicted Position",
+    y = "Actual Position",
+    fill = "Frequency"
+  ) +
+  theme_minimal()
+print(confusion_heatmap)
+```
+
+The recall rate indicated the proportion of actual positive cases which were correctly identified by the model. We can see from this plot for example how the CAM position was the one which was least detected. The potential limitation with this is the CEF might have overestimated or underestimated the importance of certain features on a CAM player, leading it to have a smaller recall rate.In terms of specificity, the model correctly is able to identify the positions and not missclassifying with true negative cases. This is lower for CM, which makes sense because again, it is the position where most metrics might overlap.
+
+```{r}
+class_metrics <- data.frame(
+  Class = rownames(conf_matrix$byClass),
+  Sensitivity = conf_matrix$byClass[, "Sensitivity"],
+  Specificity = conf_matrix$byClass[, "Specificity"]
+)
+class_metrics_long <- tidyr::pivot_longer(
+  class_metrics,
+  cols = c(Sensitivity, Specificity),
+  names_to = "Metric",
+  values_to = "Value"
+)
+sensitivity_specificity_plot <- ggplot(class_metrics_long, aes(x = Class, y = Value, fill = Metric)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Class-wise Sensitivity and Specificity",
+    x = "Class",
+    y = "Metric Value"
+  ) +
+  theme_minimal() +
+  scale_fill_manual(values = c("Sensitivity" = "skyblue", "Specificity" = "purple"))
+
+print(sensitivity_specificity_plot)
+```
+
+One usage of the MSE or the mean squared error is to evaluate how well each model was detected. We can see how CAM was the class with the highest MSE, which is consistent with it also being the least sensitive class. Again, this calls to question why CAM is not being as accurately classified as other, and a potential change in the CEF might be needed to be implemented if this project is to be continued.
+
+```{r}
+mse_data <- male_players_test_set %>%
+  mutate(
+    Predicted = rf_predictions,
+    Error = as.numeric(Predicted != Position) 
+  ) %>%
+  group_by(Position) %>%
+  summarize(MSE = mean(Error))
+
+mse_plot <- ggplot(mse_data, aes(x = Position, y = MSE, fill = Position)) +
+  geom_bar(stat = "identity") +
+  labs(
+    title = "MSE by Class",
+    x = "Class",
+    y = "MSE"
+  ) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2")
+
+print(mse_plot)
+
+```
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(xgboost)
+  library(ggplot2)
+  library(dplyr)
+  library(gridExtra)
+  library(caret)
+})
+
+train_data <- male_players_training_set %>%
+  mutate(Position = as.numeric(factor(Position)) - 1)
+test_data <- male_players_test_set %>%
+  mutate(Position = as.numeric(factor(Position)) - 1)
+
+train_matrix <- as.matrix(train_data %>% select(PAC, SHO, PAS, DRI, DEF, PHY))
+train_label <- train_data$Position
+
+test_matrix <- as.matrix(test_data %>% select(PAC, SHO, PAS, DRI, DEF, PHY))
+test_label <- test_data$Position
+
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+#Again, we remain consistent with the 10-fold cross-validation as we did with the single tree and random forest. This allows for consistency amongst the three models, and also generalizability while reducing overfitting. The main reason to introduce cross-validation for the boosted trees is to tune hyperparameters like max_depth, nrounds, eta, which are leasted below. To avoid underfitting, we started with nrounds being 50, slowly increasing until the satisfactory result is achieved. For the eta, we consider the nrounds, and also chose a 0.1 as it sets a good balance between learning speed and precision. For max_depth, to avoid the risk of over_fitting, we decide a more modest value as it might be sufficient to capture the complexit of the training data.
+
+boosted_model <- xgboost(
+  data = dtrain,
+  objective = "multi:softprob",
+  num_class = length(unique(train_label)),
+  nrounds = 100,
+  eta = 0.1,
+  max_depth = 6,
+  verbose = FALSE
+)
+
+test_pred <- predict(boosted_model, dtest)
+test_pred_matrix <- matrix(test_pred, ncol = length(unique(train_label)), byrow = TRUE)
+predicted_class <- max.col(test_pred_matrix) - 1
+
+rmse <- sqrt(mean((predicted_class - test_label)^2))
+mae <- mean(abs(predicted_class - test_label))
+
+sprintf("Boosted Tree RMSE: %.2f", rmse)
+sprintf("Boosted Tree MAE: %.2f", mae)
+
+```
+
+This visualization shows the error rate for each class.One reason why I decided to use this visualization is to compare with the random forest and see if CAM was outputting a high error rate because of some tuning in Random Forest or if it was more related to the CEF, and I can conclude that it most likely was the latter. This again furthers the idea that the appropriate parameters for CAM need to be re-evaluated.One thing that I can notice from the graph is that the error rate stayed consistent through the other Positions, which is a good indicator of the weakness lying mainly on the CAM position.
+
+
+```{r}
+error_data <- data.frame(
+  Actual = factor(test_label, levels = 0:3, labels = c("CAM", "CDM", "CM", "OM")),
+  Prediction = factor(predicted_class, levels = 0:3, labels = c("CAM", "CDM", "CM", "OM"))
+)
+
+error_data$Error <- ifelse(error_data$Actual == error_data$Prediction, 0, 1)
+
+class_error <- error_data %>%
+  group_by(Actual) %>%
+  summarise(Error_Rate = mean(Error)) 
+
+error_plot <- ggplot(class_error, aes(x = Actual, y = Error_Rate, fill = Actual)) +
+  geom_bar(stat = "identity", color = "white") +
+  labs(
+    title = "Class-wise Error Distribution",
+    x = "Actual Class",
+    y = "Error Rate"
+  ) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set3")
+```
+
+
+This violin plot ilustrates the distribution of prediction confidences for each feature. One thing I noticed the three trees had in common was consistency between the features, and so I wanted to see if the usage of each feature was homogenous, and equally distributed amongts all features.This was also to avoid overlooking an outlier that could make us believe that a position is being influenced heavily because of the CEF, when in reallity it was a feature that was not being observed closely enough.
+
+
+```{r}
+feature_contrib <- apply(test_pred_matrix, 1, max)
+contrib_data <- data.frame(
+  Feature = factor(rep(c("PAC", "SHO", "PAS", "DRI", "DEF", "PHY"), each = nrow(test_matrix))),
+  Value = c(test_matrix[, "PAC"], test_matrix[, "SHO"], test_matrix[, "PAS"], 
+            test_matrix[, "DRI"], test_matrix[, "DEF"], test_matrix[, "PHY"]),
+  Confidence = rep(feature_contrib, 6)
+)
+
+contrib_plot <- ggplot(contrib_data, aes(x = Feature, y = Confidence, fill = Feature)) +
+  geom_violin(alpha = 0.8) +
+  labs(
+    title = "Feature Contribution to Prediction Confidence",
+    x = "Feature",
+    y = "Prediction Confidence"
+  ) +
+  theme_minimal() +
+  scale_fill_brewer(palette = "Set2")
+```
+
+This visual allows us to interpret the predicted vs actual data properly. The results from this visualization are interesting, as in two of the classes, the predicted was higher than the actual, while for the other two classes, the actual was higher than the predicted. The model shows a systematic bias towards CM and OM, which again might be beacuse of the largely overlapping metric requirements from CM with other positions.
+
+```{r}
+class_distribution <- error_data %>%
+  group_by(Actual) %>%
+  summarise(Actual_Count = n())
+predicted_distribution <- error_data %>%
+  group_by(Prediction) %>%
+  summarise(Predicted_Count = n())
+distribution_data <- full_join(class_distribution, predicted_distribution, 
+                               by = c("Actual" = "Prediction")) %>%
+  pivot_longer(cols = c(Actual_Count, Predicted_Count), names_to = "Type", values_to = "Count")
+
+distribution_plot <- ggplot(distribution_data, aes(x = Actual, y = Count, fill = Type)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(
+    title = "Predicted vs Actual Class Distribution",
+    x = "Class",
+    y = "Count"
+  ) +
+  theme_minimal() +
+  scale_fill_manual(values = c("Actual_Count" = "orange", "Predicted_Count" = "purple"))
+
+print(error_plot)
+print(contrib_plot)
+print(distribution_plot)
+
+```
+
+# ID generalisation
+```{r}
+test_data <- male_players_test_set %>%
+  mutate(Position = as.numeric(factor(Position)) - 1)
+
+test_matrix <- as.matrix(test_data %>% select(PAC, SHO, PAS, DRI, DEF, PHY))
+test_label <- test_data$Position
+
+
+#Single Tree Accuracy!
+tree_pred <- predict(tree_model, test_data, type = "raw")  
+tree_pred_class <- as.numeric(factor(tree_pred)) - 1
+tree_accuracy <- mean(tree_pred_class == test_label) * 100
+
+#Random Forest Accuracy!
+rf_pred <- predict(rf_model, test_data)
+rf_pred_class <- as.numeric(factor(rf_pred)) - 1
+rf_accuracy <- mean(rf_pred_class == test_label) * 100
+
+#Boosted Tree Accuracy!
+boosted_pred <- predict(boosted_model, xgb.DMatrix(data = test_matrix))
+boosted_pred_matrix <- matrix(boosted_pred, ncol = length(unique(test_label)), byrow = TRUE)
+boosted_pred_class <- max.col(boosted_pred_matrix) - 1
+boosted_accuracy <- mean(boosted_pred_class == test_label) * 100
+```
+
+Comparisson of Tree Accuracy!
+
+```{r}
+print("Accuracy Comparisson for Tree-Based Models!:")
+print(sprintf("1.Single Decission Tree Accuracy: %.2f%%", tree_accuracy))
+print(sprintf("2.Random Forest Accuracy: %.2f%%", rf_accuracy))
+print(sprintf("3.Boosted Tree Accuracy: %.2f%%", boosted_accuracy))
+
+accuracies <- c(tree_accuracy, rf_accuracy, boosted_accuracy)
+names(accuracies) <- c("Single Tree", "Random Forest", "Boosted Tree")
+
+best_model <- names(which.max(accuracies))
+print(sprintf("Best Model: % s", best_model))
+```
+
+While the Random Forest is the most accurate, this is a very close result between the Random Forest and the Boosted Tree!
+
+
+# OOD generalisation
+
+
+Concept shift:
+For the concept shift, the idea is to change the conditional distribution of the outcome, without disturbing the distribution of the predictor values (or the metrics). In order to do this, we can set conditionals that will lead to a worse and better OOD accuracy.
+
+Worse Concept Shift:
+For the worse concept shift, we would mutate the dataset and setting a condition. With the runif() function, we are selecting 25% of CM players who have a Dribbling higher than 75. The reason why this may not be accurate is because of the normal distribution curve. As mentioned, the difference between a 75 dribbling, an 80 dribbling, and a 85 dribbling, is not linear, as it is much harder to improve once you are at the top of the level (hence the reason why no players in EA FC have a 99 stat despite being consider the best of all time). Hence, since the average dribbling is around 75, we can see how we are proportionally taking more players than necessary with the CM and 75+ dribbling archetypes, incorrectly labeling in most cases as OM. For this reason, playing with this 75 dribbling shows how when setting 65 as the filter, the model does significantly worse, when selecting 75 as the filter, the model does slightly worse, and when selecting 85 as the filter, the model actually does slightly better. This is because the density of players with statistics are normally distributed, and it is much harder for a player to go in a year from a 85 dribbling to a 90 dribbling, than a player to go from a 55 dribbling to a 60 dribbling.It is important to also connect this to the variable importance, which can be futher explained when attempting to do a better accuracy OOD. 
+
+Better Concept Shift:
+For the better concept shift, we must directly reference the variable importance from the random forest. Firstly, as we understand from the weights assigned in our CEF, the tactical requirement for different position varies between positions. There have been an exaggerated amount of slow (low PAC) OM's in the past decade, where they are more recognized for their through ball passing and ability to quickly transition to a counter attack with a quick vision. However, a CDM that has a low defense statistic would essentially be a huge liability for a team, as usually the CDM's are the first line of defense for a team. For this reason, despite imitating the metrics in the last example, we can see that DEF has a greater effect on the accuracy, and it can make the model more accurate because a CM with such a high defensive stat would most likely than not be considered for the CDM position. It is here where we truly understand the importance of utilizing real-world knowledge in certain data-sets, as complex real-world problems usually include situations like these where the impact of each metric is much larger than it may seem in hindsight.
+
+```{r}
+concept_shift_worse <- male_players_test_set %>%
+  mutate(Position = if_else(Position == "CM" & DRI > 75 & runif(n()) < 0.25, "OM", Position))
+
+concept_shift_better <- male_players_test_set %>%
+  mutate(Position = if_else(Position == "CM" & DEF > 75 & runif(n()) < 0.25, "CDM", Position))
+
+
+concept_pred_worse <- predict(rf_model, newdata = concept_shift_worse)
+concept_accuracy_worse <- mean(concept_pred_worse == concept_shift_worse$Position) * 100
+
+concept_pred_better <- predict(rf_model, newdata = concept_shift_better)
+concept_accuracy_better <- mean(concept_pred_better == concept_shift_better$Position) * 100
+
+sprintf("Random Forest ID Accuracy: %.2f%%", rf_accuracy)
+sprintf("Random Forest Concept Shift Accuracy (Worse Scenario): %.2f%%", concept_accuracy_worse)
+sprintf("Random Forest Concept Shift Accuracy (Better Scenario): %.2f%%", concept_accuracy_better)
+
+```
+
+# Covariate shift
+
+For the covariate shift, the idea is to change the distribution of the predictor variables while keeping the outcome the same. By changing the distribution of the features, the idea is to alter the features themselves, to change the accuracy of the model.
+
+Covariate Worse:
+For the covariate worse scenario, we’ve discussed throughout the project the importance of evaluating the impact of a feature on a class. In this case, we are going to assess the impact of certain features on the center-midfield (CM) position. One of the problems with misclassification of CMs arises from what we call the "jack of all trades" features. A CM is typically a well-rounded player, but the issue occurs when a CM is too good in certain areas.For example, consider the top 5% of CM players. Their shooting or pace is most likely better than players from lower divisions. This would mean that, despite a player from a lower division having a strong defense (relative to other players in that division), a highly rated CM from the top division of England will likely have a better overall defense than a lower-rated CDM, even if their defense is lower relative to their other statistics.This issue would be more pronounced with a larger dataset, where we could normalize and create a more realistic Comparative Effectiveness Factor (CEF). However, with a smaller dataset, this could result in niche exceptions that complicate training and reduce model accuracy.Let’s explore this concept through covariate shift. If we increase the statistics of these lower-ranked players without standardizing them relative to other stats, we’re likely to see a decrease in model accuracy. As mentioned, most players with 80+ in a given stat are exceptional in that area. By applying a filter of at least 75 in defense, pace, and shooting—and increasing each by 10 (which are key for CDM, OM, and CAM positions, respectively)—we create confusion for the model.Since high statistics in these fields would more likely classify players as CDM, OM, or CAM, a highly rated CM with overall high statistics across the board could confuse the model. This is because, while their defense, pace, and shooting may be high relative to their own position, they are still being classified based on their overall stats, which are higher in comparison to the other attributes on their card.
+
+Covariate Better:
+As mentioned previously, when considering the influence of specific statistics on model accuracy, by analyzing the influenced position directly (CDM,OM,and CAM respectively), we are able to understand how the same process can make the model increase in accuracy contrary to what happened in the previous example. As mentioned, a highly rated CM can confuse the model, because them having a highly rated card can confuse the model. Another reason why we should consider introducing a metric to make the data be based on the other statistics (for example a percentage distribution) is to the example presented here. When considering the cards that are influenced by features, we see an increase in model accuracy when the same method is implemented. This is because we are aligning player attributes with the defining characteristics of their position. A CDM with a highly exceptional defense is less likely to be missclassified as a CM, OM, or CAM. This is because of the clear distinguished trait of being a highly defensive player and its effect on a player becoming a CDM. By focusing on the key attributes for each position we are able to reduce the overlap between positions. This analysis helped realize the focus that has to be made in CAM and CM, as the key distinguishing features for both are less clear cut, and so they need to be defined more appropiately.
+
+```{r}
+covariate_worse <- male_players_test_set %>%
+  mutate(
+    DEF = if_else(Position == "CM" & DEF > 75, DEF + 10, DEF),
+    PAC = if_else(Position == "CM" & PAC > 75, PAC + 10, PAC),
+    SHO = if_else(Position == "CM" & SHO > 75, SHO + 10, SHO)
+  )
+
+
+covariate_better <- male_players_test_set %>%
+  mutate(
+    DEF = if_else(Position == "CDM" & DEF > 75, DEF + 10, DEF),
+    PAC = if_else(Position == "OM" & PAC > 75, PAC + 10, PAC),
+    SHO = if_else(Position == "CAM" & SHO > 75, SHO + 10, SHO)
+  )
+covariate_pred_better <- predict(rf_model, newdata = covariate_better)
+covariate_accuracy_better <- mean(covariate_pred_better == covariate_better$Position) * 100
+
+covariate_pred_worse <- predict(rf_model, newdata = covariate_worse)
+covariate_accuracy_worse <- mean(covariate_pred_worse == covariate_worse$Position) * 100
+
+sprintf("Random Forest ID Accuracy: %.2f%%", rf_accuracy)
+sprintf("Random Forest Covariate Shift Accuracy (Better Scenario): %.2f%%", covariate_accuracy_better)
+sprintf("Random Forest Covariate Shift Accuracy (Worse Scenario): %.2f%%", covariate_accuracy_worse)
+
+```
+
+
